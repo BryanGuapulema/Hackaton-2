@@ -1,0 +1,97 @@
+{
+  "run_defaults": {
+    "allow_overwrite": false,
+    "months_partitioning": "year-month"
+  },
+  "sources": [
+    {
+      "source_name": "customers_csv_github",
+      "type": "csv_github",
+      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/refs/heads/main/customers.csv",
+      "table": "customers",
+      "date_field": null,
+      "target_bronze_prefix": "bronze/source=github/table=customers/",
+      "pk": ["CustomerID"],
+      "fk": [],
+      "dq_rules": ["not_null:CustomerID"]
+    },
+    {
+      "source_name": "employee_csv_github",
+      "type": "csv_github",
+      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/refs/heads/main/employees.csv",
+      "table": "employee",
+      "date_field": null,
+      "target_bronze_prefix": "bronze/source=github/table=employee/",
+      "pk": ["EmployeeID"],
+      "fk": [],
+      "dq_rules": ["not_null:EmployeeID"]
+    },
+    {
+      "source_name": "orders_csv_github",
+      "type": "csv_github",
+      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/refs/heads/main/orders.csv",
+      "table": "orders",
+      "date_field": "OrderDate",
+      "date_format": "MM-dd-yyyy",
+      "target_bronze_prefix": "bronze/source=github/table=orders/",
+      "partitioning": "year-month",
+      "pk": ["SalesOrderID","SalesOrderDetailID"],
+      "fk": ["EmployeeID","CustomerID","ProductID","StoreID"],
+      "dq_rules": ["not_null:SalesOrderID","not_null:SalesOrderDetailID","valid_date:OrderDate"]
+    },
+    {
+      "source_name": "productCategories_csv_github",
+      "type": "csv_github",
+      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/refs/heads/main/productcategories.csv",
+      "table": "productCategories",
+      "date_field": null,
+      "target_bronze_prefix": "bronze/source=github/table=productCategories/",
+      "pk": ["CategoryID"],
+      "fk": [],
+      "dq_rules": ["not_null:CategoryID"]
+    },
+    {
+      "source_name": "products_csv_github",
+      "type": "csv_github",
+      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/refs/heads/main/products.csv",
+      "table": "products",
+      "date_field": null,
+      "target_bronze_prefix": "bronze/source=github/table=products/",
+      "pk": ["ProductID"],
+      "fk": ["SubCategoryID"],
+      "dq_rules": ["not_null:ProductID"]
+    },
+    {
+      "source_name": "productSubcategories_csv_github",
+      "type": "csv_github",
+      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/refs/heads/main/productsubcategories.csv",
+      "table": "productSubcategories",
+      "date_field": null,
+      "target_bronze_prefix": "bronze/source=github/table=productSubcategories/",
+      "pk": ["SubCategoryID"],
+      "fk": ["CategoryID"],
+      "dq_rules": ["not_null:SubCategoryID"]
+    },    
+    {
+      "source_name": "stores_mysql",
+      "type": "mysql",
+      "url_or_query": "SELECT BusinessEntityID AS StoreID, Name AS StoreName, SalesPersonID AS EmployeeID FROM Store;",
+      "table": "stores",
+      "secret_name": "hack2/mysql/stores",
+      "target_bronze_prefix": "bronze/source=mysql/table=stores/",
+      "pk": ["StoreID"],
+      "fk": ["EmployeeID"],
+      "dq_rules": ["not_null:StoreID"]
+    },
+    {
+      "source_name": "storesBudget_excel",
+      "type": "excel",
+      "excel_source_prefix": "bronze/source=excel/table=storesBudget/inbox/",
+      "table": "storesBudget",
+      "target_bronze_prefix": "bronze/source=excel/table=storesBudget/",
+      "pk": ["StoreID"],
+      "fk": [],
+      "dq_rules": ["not_null:StoreID","gte_zero:Budget"]
+    }
+  ]
+}
