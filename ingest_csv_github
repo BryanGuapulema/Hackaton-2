@@ -1,0 +1,139 @@
+import os, json, csv, io, urllib.request
+from datetime import datetime, timezone
+import boto3
+
+s3 = boto3.client('s3')
+dynamodb = boto3.resource('dynamodb')
+
+BUCKET = os.environ['BUCKET_NAME']
+CONTROL_TABLE = os.environ['CONTROL_TABLE']
+ERROR_TABLE = os.environ['ERROR_TABLE']
+
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+def _put_control(item):
+    try:
+        dynamodb.Table(CONTROL_TABLE).put_item(Item=item)
+    except Exception as e:
+        print("CONTROL LOG ERROR:", e)
+
+def _put_error(item):
+    try:
+        dynamodb.Table(ERROR_TABLE).put_item(Item=item)
+    except Exception as e:
+        print("ERROR LOG ERROR:", e)
+
+def _load_manifest():
+    key = "bronze/source_metadata/sources.json"
+    body = s3.get_object(Bucket=BUCKET, Key=key)['Body'].read()
+    m = json.loads(body.decode('utf-8'))
+    return m.get('sources', []), m.get('run_defaults', {})
+
+def _upload_bytes(key, data: bytes):
+    s3.put_object(Bucket=BUCKET, Key=key, Body=data)
+
+def _month_parts(run_month: str):
+    y, m = run_month.split("-")
+    return int(y), int(m)
+
+def _match_run_month(date_str, pattern, run_month):
+    # pattern ej: "MM-dd-yyyy"
+    try:
+        dt = datetime.strptime(date_str, "%m-%d-%Y") if pattern == "MM-dd-yyyy" else datetime.fromisoformat(date_str)
+        y, m = _month_parts(run_month)
+        return dt.year == y and dt.month == m
+    except Exception:
+        return False
+
+def handler(event, context):
+    run_month = event.get("run_month")  # "YYYY-MM"
+    allow_overwrite = bool(event.get("allow_overwrite", False))
+    run_id = f"csv_{run_month}_{int(datetime.utcnow().timestamp())}"
+
+    sources, defaults = _load_manifest()
+    csv_sources = [s for s in sources if s.get("type") == "csv_github"]
+
+    started = _now_iso()
+    total_written = 0
+
+    for src in csv_sources:
+        table = src['table']
+        url = src['url_or_query']
+        target_prefix = src['target_bronze_prefix']
+
+        try:
+            # descarga
+            with urllib.request.urlopen(url) as resp:
+                raw = resp.read().decode('utf-8', errors='replace')
+            reader = csv.DictReader(io.StringIO(raw))
+
+            if table == "orders":
+                date_field = src.get("date_field", "OrderDate")
+                date_fmt = src.get("date_format", "MM-dd-yyyy")
+                y, m = _month_parts(run_month)
+                # salida particionada por year/month
+                key_prefix = f"{target_prefix}year={y}/month={m}/"
+                # opcional: limpiar partición si allow_overwrite
+                if allow_overwrite:
+                    _clear_prefix(BUCKET, key_prefix)
+
+                out_buf = io.StringIO()
+                writer = None
+                cnt = 0
+                for row in reader:
+                    if _match_run_month(row.get(date_field, ""), date_fmt, run_month):
+                        if writer is None:
+                            writer = csv.DictWriter(out_buf, fieldnames=reader.fieldnames)
+                            writer.writeheader()
+                        writer.writerow(row)
+                        cnt += 1
+                data = out_buf.getvalue().encode('utf-8')
+                key = f"{key_prefix}{table}_{run_month}.csv"
+                _upload_bytes(key, data)
+                total_written += cnt
+
+            else:
+                # snapshot por mes
+                key_prefix = f"{target_prefix}run_month={run_month}/"
+                if allow_overwrite:
+                    _clear_prefix(BUCKET, key_prefix)
+                data = io.StringIO()
+                w = csv.DictWriter(data, fieldnames=reader.fieldnames)
+                w.writeheader()
+                for row in reader:
+                    w.writerow(row)
+                _upload_bytes(f"{key_prefix}{table}_{run_month}.csv", data.getvalue().encode('utf-8'))
+
+            # log control por tabla
+            _put_control({
+                "run_id": run_id,
+                "run_month": run_month,
+                "source": "github",
+                "table": table,
+                "status": "SUCCEEDED",
+                "records_out": total_written,
+                "started_at": started,
+                "ended_at": _now_iso()
+            })
+
+        except Exception as e:
+            _put_error({
+                "run_id": run_id,
+                "ts": int(datetime.utcnow().timestamp()),
+                "source": "github",
+                "table": table,
+                "step": "ingest",
+                "severity": "ERROR",
+                "error_code": "CSV_GITHUB_INGEST",
+                "message": str(e)
+            })
+            raise
+
+    return {"run_id": run_id, "written": total_written, "run_month": run_month}
+
+def _clear_prefix(bucket, prefix):
+    # borra objetos bajo el prefijo (para overwrite seguro)
+    s3r = boto3.resource('s3')
+    b = s3r.Bucket(bucket)
+    b.objects.filter(Prefix=prefix).delete()
