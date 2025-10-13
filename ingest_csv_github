@@ -38,13 +38,26 @@ def _month_parts(run_month: str):
     return int(y), int(m)
 
 def _match_run_month(date_str, pattern, run_month):
-    # pattern ej: "MM-dd-yyyy"
-    try:
-        dt = datetime.strptime(date_str, "%m-%d-%Y") if pattern == "MM-dd-yyyy" else datetime.fromisoformat(date_str)
-        y, m = _month_parts(run_month)
-        return dt.year == y and dt.month == m
-    except Exception:
+    if not date_str:
         return False
+    date_str = date_str.strip()
+    # corta parte horaria si viene "YYYY-MM-DD HH:MM:SS" o "T..."
+    date_str = date_str.split("T")[0].split(" ")[0]
+    fmts = []
+    # si te pasan pattern, úsalo primero
+    if pattern == "MM-dd-yyyy":
+        fmts.append("%m-%d-%Y")
+    # formatos comunes alternativos
+    fmts += ["%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d", "%d-%m-%Y"]
+    for f in fmts:
+        try:
+            dt = datetime.strptime(date_str, f)
+            y, m = _month_parts(run_month)
+            return dt.year == y and dt.month == m
+        except Exception:
+            continue
+    return False
+
 
 def handler(event, context):
     run_month = event.get("run_month")  # "YYYY-MM"
@@ -137,3 +150,7 @@ def _clear_prefix(bucket, prefix):
     s3r = boto3.resource('s3')
     b = s3r.Bucket(bucket)
     b.objects.filter(Prefix=prefix).delete()
+
+
+def lambda_handler(event, context):
+    return handler(event, context)
