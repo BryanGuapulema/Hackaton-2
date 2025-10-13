@@ -40,15 +40,18 @@ def _month_parts(run_month: str):
 def _match_run_month(date_str, pattern, run_month):
     if not date_str:
         return False
-    date_str = date_str.strip()
-    # corta parte horaria si viene "YYYY-MM-DD HH:MM:SS" o "T..."
-    date_str = date_str.split("T")[0].split(" ")[0]
+    date_str = date_str.strip().split("T")[0].split(" ")[0]
+
     fmts = []
-    # si te pasan pattern, úsalo primero
-    if pattern == "MM-dd-yyyy":
+    # respeta el patrón declarado en sources.json si existe
+    if pattern in ("M/d/yyyy", "MM/dd/yyyy"):
+        fmts.append("%m/%d/%Y")
+    elif pattern in ("MM-dd-yyyy", "M-d-yyyy"):
         fmts.append("%m-%d-%Y")
-    # formatos comunes alternativos
-    fmts += ["%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d", "%d-%m-%Y"]
+
+    # formatos alternativos comunes
+    fmts += ["%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%m/%d/%Y", "%m-%d-%Y"]
+
     for f in fmts:
         try:
             dt = datetime.strptime(date_str, f)
@@ -57,6 +60,7 @@ def _match_run_month(date_str, pattern, run_month):
         except Exception:
             continue
     return False
+
 
 
 def handler(event, context):
