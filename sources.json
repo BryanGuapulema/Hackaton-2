@@ -7,7 +7,7 @@
     {
       "source_name": "customers_csv_github",
       "type": "csv_github",
-      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/refs/heads/main/customers.csv",
+      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/main/customers.csv",
       "table": "customers",
       "date_field": null,
       "target_bronze_prefix": "bronze/source=github/table=customers/",
@@ -18,7 +18,7 @@
     {
       "source_name": "employee_csv_github",
       "type": "csv_github",
-      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/refs/heads/main/employees.csv",
+      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/main/employees.csv",
       "table": "employee",
       "date_field": null,
       "target_bronze_prefix": "bronze/source=github/table=employee/",
@@ -29,7 +29,7 @@
     {
       "source_name": "orders_csv_github",
       "type": "csv_github",
-      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/refs/heads/main/orders.csv",
+      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/main/orders.csv",
       "table": "orders",
       "date_field": "OrderDate",
       "date_format": "MM-dd-yyyy",
@@ -42,7 +42,7 @@
     {
       "source_name": "productCategories_csv_github",
       "type": "csv_github",
-      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/refs/heads/main/productcategories.csv",
+      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/main/productcategories.csv",
       "table": "productCategories",
       "date_field": null,
       "target_bronze_prefix": "bronze/source=github/table=productCategories/",
@@ -53,7 +53,7 @@
     {
       "source_name": "products_csv_github",
       "type": "csv_github",
-      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/refs/heads/main/products.csv",
+      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/main/products.csv",
       "table": "products",
       "date_field": null,
       "target_bronze_prefix": "bronze/source=github/table=products/",
@@ -64,7 +64,7 @@
     {
       "source_name": "productSubcategories_csv_github",
       "type": "csv_github",
-      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/refs/heads/main/productsubcategories.csv",
+      "url_or_query": "https://raw.githubusercontent.com/BryanGuapulema/AW_data_csv/main/productsubcategories.csv",
       "table": "productSubcategories",
       "date_field": null,
       "target_bronze_prefix": "bronze/source=github/table=productSubcategories/",
