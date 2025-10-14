@@ -22,6 +22,9 @@ def run_dim_customers(run_month: str):
 
     # 2) CTAS válidos → Silver
     run_athena(f"""
+    CREATE TABLE {DB}.tmp_dim_customer_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY', external_location='{silver_loc}')
+    AS
     WITH s AS (
       SELECT CAST(CustomerID AS INT) AS CustomerID,
              TRIM(FirstName)         AS FirstName,
@@ -32,14 +35,14 @@ def run_dim_customers(run_month: str):
       FROM {DB}.bronze_customers_{y}_{int(m_z)}
     ),
     valid AS (SELECT * FROM s WHERE CustomerID IS NOT NULL AND rn=1)
-    CREATE TABLE {DB}.tmp_dim_customer_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{silver_loc}')
-    AS SELECT CustomerID, FirstName, LastName, FullName FROM valid;
+    SELECT CustomerID, FirstName, LastName, FullName FROM valid;
     """)
 
     # 3) CTAS inválidos → logs/invalid
     run_athena(f"""
+    CREATE TABLE {DB}.tmp_dim_customer_invalid_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY', external_location='{invalid_loc}')
+    AS
     WITH s AS (
       SELECT CAST(CustomerID AS INT) AS CustomerID,
              TRIM(FirstName)         AS FirstName,
@@ -57,10 +60,7 @@ def run_dim_customers(run_month: str):
       FROM s
       WHERE NOT (CustomerID IS NOT NULL AND rn=1)
     )
-    CREATE TABLE {DB}.tmp_dim_customer_invalid_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{invalid_loc}')
-    AS SELECT CustomerID, FirstName, LastName, FullName, REASON FROM invalid;
+    SELECT CustomerID, FirstName, LastName, FullName, REASON FROM invalid;
     """)
 
     # 4) Drops

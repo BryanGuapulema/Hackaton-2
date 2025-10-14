@@ -10,7 +10,7 @@ def run_dim_store(run_month: str):
     silver_loc = f"s3://{BUCKET}/silver/dim=store/"
     invalid_loc = f"s3://{BUCKET}/logs/invalid/dim=store/run_month={y}-{m_z}/"
 
-    # 1) Tablas externas (una sentencia por llamada)
+    # 1) Tablas externas Bronze (cada una en una ejecución)
     run_athena(f"""
     CREATE EXTERNAL TABLE IF NOT EXISTS {DB}.bronze_stores_{y}_{int(m_z)} (
       StoreID    INT,
@@ -21,6 +21,7 @@ def run_dim_store(run_month: str):
     WITH SERDEPROPERTIES ('separatorChar' = ',', 'quoteChar' = '"', 'escapeChar'='\\\\')
     LOCATION '{stores_loc}';
     """)
+
     run_athena(f"""
     CREATE EXTERNAL TABLE IF NOT EXISTS {DB}.bronze_storesbudget_{y}_{int(m_z)} (
       StoreID INT,
@@ -31,8 +32,11 @@ def run_dim_store(run_month: str):
     LOCATION '{budget_loc}';
     """)
 
-    # 2) CTAS válidos → Silver
+    # 2) CTAS válidos → Silver (CREATE TABLE ... AS WITH ... SELECT)
     run_athena(f"""
+    CREATE TABLE {DB}.tmp_dim_store_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY', external_location='{silver_loc}')
+    AS
     WITH s AS (
       SELECT
         CAST(StoreID AS INT)         AS StoreID,
@@ -54,17 +58,15 @@ def run_dim_store(run_month: str):
              (b.Budget IS NULL OR b.Budget >= 0) AS budget_ok
       FROM s LEFT JOIN b USING (StoreID)
     ),
-    valid AS (
-      SELECT * FROM j WHERE pk_ok AND rn=1 AND budget_ok
-    )
-    CREATE TABLE {DB}.tmp_dim_store_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{silver_loc}')
-    AS SELECT StoreID, StoreName, EmployeeID, Budget FROM valid;
+    valid AS (SELECT * FROM j WHERE pk_ok AND rn=1 AND budget_ok)
+    SELECT StoreID, StoreName, EmployeeID, Budget FROM valid;
     """)
 
     # 3) CTAS inválidos → logs/invalid
     run_athena(f"""
+    CREATE TABLE {DB}.tmp_dim_store_invalid_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY', external_location='{invalid_loc}')
+    AS
     WITH s AS (
       SELECT
         CAST(StoreID AS INT)         AS StoreID,
@@ -97,12 +99,9 @@ def run_dim_store(run_month: str):
       FROM j
       WHERE NOT (pk_ok AND rn=1 AND budget_ok)
     )
-    CREATE TABLE {DB}.tmp_dim_store_invalid_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{invalid_loc}')
-    AS SELECT StoreID, StoreName, EmployeeID, Budget, REASON FROM invalid;
+    SELECT StoreID, StoreName, EmployeeID, Budget, REASON FROM invalid;
     """)
 
-    # 4) Drops (una por llamada)
+    # 4) Limpieza de tablas temporales
     run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_store_{y}_{int(m_z)};")
     run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_store_invalid_{y}_{int(m_z)};")

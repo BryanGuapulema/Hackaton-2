@@ -2,7 +2,7 @@
 from athena_utils import run_athena, ym_from_run_month, BUCKET, DB
 
 def run_dim_products(run_month: str):
-    """Crea Category, SubCategory y Product en Silver; valida PKs y dedup. (FKs básicas por no-nulos)."""
+    """Crea Category, SubCategory y Product en Silver; valida PKs y dedup (FKs básicas por no-nulos)."""
     y, m, m_z = ym_from_run_month(run_month)
 
     cat_loc  = f"s3://{BUCKET}/bronze/source=github/table=productCategories/run_month={y}-{m_z}/"
@@ -17,7 +17,7 @@ def run_dim_products(run_month: str):
     invalid_sub  = f"s3://{BUCKET}/logs/invalid/dim=productSubcategory/run_month={y}-{m_z}/"
     invalid_prod = f"s3://{BUCKET}/logs/invalid/dim=product/run_month={y}-{m_z}/"
 
-    # 1) Tablas externas Bronze (una por llamada)
+    # 1) Tablas externas Bronze
     run_athena(f"""
     CREATE EXTERNAL TABLE IF NOT EXISTS {DB}.bronze_productcategories_{y}_{int(m_z)} (
       CategoryID   INT,
@@ -53,8 +53,11 @@ def run_dim_products(run_month: str):
     LOCATION '{prod_loc}';
     """)
 
-    # 2) Category — CTAS válidos
+    # 2) CATEGORY — válidos
     run_athena(f"""
+    CREATE TABLE {DB}.tmp_dim_product_category_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY', external_location='{silver_cat}')
+    AS
     WITH c AS (
       SELECT CAST(CategoryID AS INT) AS CategoryID,
              TRIM(CategoryName)      AS CategoryName,
@@ -63,14 +66,13 @@ def run_dim_products(run_month: str):
       FROM {DB}.bronze_productcategories_{y}_{int(m_z)}
     ),
     c_valid AS (SELECT * FROM c WHERE CategoryID IS NOT NULL AND rn=1)
-    CREATE TABLE {DB}.tmp_dim_product_category_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{silver_cat}')
-    AS SELECT CategoryID, CategoryName FROM c_valid;
+    SELECT CategoryID, CategoryName FROM c_valid;
     """)
-
-    # 3) Category — CTAS inválidos
+    # 3) CATEGORY — inválidos
     run_athena(f"""
+    CREATE TABLE {DB}.tmp_dim_product_category_invalid_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY', external_location='{invalid_cat}')
+    AS
     WITH c AS (
       SELECT CAST(CategoryID AS INT) AS CategoryID,
              TRIM(CategoryName)      AS CategoryName,
@@ -85,16 +87,16 @@ def run_dim_products(run_month: str):
       FROM c
       WHERE NOT (CategoryID IS NOT NULL AND rn=1)
     )
-    CREATE TABLE {DB}.tmp_dim_product_category_invalid_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{invalid_cat}')
-    AS SELECT CategoryID, CategoryName, REASON FROM c_invalid;
+    SELECT CategoryID, CategoryName, REASON FROM c_invalid;
     """)
     run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_product_category_{y}_{int(m_z)};")
     run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_product_category_invalid_{y}_{int(m_z)};")
 
-    # 4) SubCategory — CTAS válidos
+    # 4) SUBCATEGORY — válidos
     run_athena(f"""
+    CREATE TABLE {DB}.tmp_dim_product_subcategory_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY', external_location='{silver_sub}')
+    AS
     WITH s AS (
       SELECT CAST(SubCategoryID AS INT) AS SubCategoryID,
              CAST(CategoryID AS INT)    AS CategoryID,
@@ -107,14 +109,13 @@ def run_dim_products(run_month: str):
       SELECT * FROM s
       WHERE SubCategoryID IS NOT NULL AND rn=1 AND CategoryID IS NOT NULL
     )
-    CREATE TABLE {DB}.tmp_dim_product_subcategory_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{silver_sub}')
-    AS SELECT SubCategoryID, CategoryID, SubCategoryName FROM s_valid;
+    SELECT SubCategoryID, CategoryID, SubCategoryName FROM s_valid;
     """)
-
-    # 5) SubCategory — CTAS inválidos
+    # 5) SUBCATEGORY — inválidos
     run_athena(f"""
+    CREATE TABLE {DB}.tmp_dim_product_subcategory_invalid_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY', external_location='{invalid_sub}')
+    AS
     WITH s AS (
       SELECT CAST(SubCategoryID AS INT) AS SubCategoryID,
              CAST(CategoryID AS INT)    AS CategoryID,
@@ -134,16 +135,16 @@ def run_dim_products(run_month: str):
       FROM s
       WHERE NOT (s.SubCategoryID IS NOT NULL AND s.rn=1 AND s.CategoryID IS NOT NULL)
     )
-    CREATE TABLE {DB}.tmp_dim_product_subcategory_invalid_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{invalid_sub}')
-    AS SELECT SubCategoryID, CategoryID, SubCategoryName, REASON FROM s_invalid;
+    SELECT SubCategoryID, CategoryID, SubCategoryName, REASON FROM s_invalid;
     """)
     run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_product_subcategory_{y}_{int(m_z)};")
     run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_product_subcategory_invalid_{y}_{int(m_z)};")
 
-    # 6) Product — CTAS válidos
+    # 6) PRODUCT — válidos
     run_athena(f"""
+    CREATE TABLE {DB}.tmp_dim_product_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY', external_location='{silver_prod}')
+    AS
     WITH p AS (
       SELECT CAST(ProductID AS INT)     AS ProductID,
              TRIM(ProductNumber)        AS ProductNumber,
@@ -163,16 +164,15 @@ def run_dim_products(run_month: str):
       SELECT * FROM p
       WHERE ProductID IS NOT NULL AND rn=1 AND SubCategoryID IS NOT NULL
     )
-    CREATE TABLE {DB}.tmp_dim_product_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{silver_prod}')
-    AS SELECT ProductID, ProductNumber, ProductName, ModelName, MakeFlag,
-              StandardCost, ListPrice, SubCategoryID
+    SELECT ProductID, ProductNumber, ProductName, ModelName, MakeFlag,
+           StandardCost, ListPrice, SubCategoryID
     FROM p_valid;
     """)
-
-    # 7) Product — CTAS inválidos
+    # 7) PRODUCT — inválidos
     run_athena(f"""
+    CREATE TABLE {DB}.tmp_dim_product_invalid_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY', external_location='{invalid_prod}')
+    AS
     WITH p AS (
       SELECT CAST(ProductID AS INT)     AS ProductID,
              TRIM(ProductNumber)        AS ProductNumber,
@@ -199,11 +199,8 @@ def run_dim_products(run_month: str):
       FROM p
       WHERE NOT (p.ProductID IS NOT NULL AND p.rn=1 AND p.SubCategoryID IS NOT NULL)
     )
-    CREATE TABLE {DB}.tmp_dim_product_invalid_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{invalid_prod}')
-    AS SELECT ProductID, ProductNumber, ProductName, ModelName, MakeFlag,
-              StandardCost, ListPrice, SubCategoryID, REASON
+    SELECT ProductID, ProductNumber, ProductName, ModelName, MakeFlag,
+           StandardCost, ListPrice, SubCategoryID, REASON
     FROM p_invalid;
     """)
     run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_product_{y}_{int(m_z)};")

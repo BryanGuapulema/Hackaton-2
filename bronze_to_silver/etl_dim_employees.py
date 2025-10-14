@@ -30,6 +30,9 @@ def run_dim_employees(run_month: str):
 
     # 2) CTAS válidos → Silver
     run_athena(f"""
+    CREATE TABLE {DB}.tmp_dim_employee_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY', external_location='{silver_loc}')
+    AS
     WITH s AS (
       SELECT
         CAST(EmployeeID AS INT)        AS EmployeeID,
@@ -62,17 +65,17 @@ def run_dim_employees(run_month: str):
       SELECT * FROM s2
       WHERE EmployeeID IS NOT NULL AND rn=1 AND GenderNorm IN ('M','F') AND MaritalNorm IN ('S','M')
     )
-    CREATE TABLE {DB}.tmp_dim_employee_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{silver_loc}')
-    AS SELECT EmployeeID, ManagerID, FirstName, LastName, FullName, JobTitle,
-              OrganizationLevel, MaritalNorm AS MaritalStatus, GenderNorm AS Gender,
-              Territory, Country, "Group"
+    SELECT EmployeeID, ManagerID, FirstName, LastName, FullName, JobTitle,
+           OrganizationLevel, MaritalNorm AS MaritalStatus, GenderNorm AS Gender,
+           Territory, Country, "Group"
     FROM valid;
     """)
 
     # 3) CTAS inválidos → logs/invalid
     run_athena(f"""
+    CREATE TABLE {DB}.tmp_dim_employee_invalid_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY', external_location='{invalid_loc}')
+    AS
     WITH s AS (
       SELECT
         CAST(EmployeeID AS INT)        AS EmployeeID,
@@ -112,15 +115,11 @@ def run_dim_employees(run_month: str):
       FROM s2
       WHERE NOT (EmployeeID IS NOT NULL AND rn=1 AND GenderNorm IN ('M','F') AND MaritalNorm IN ('S','M'))
     )
-    CREATE TABLE {DB}.tmp_dim_employee_invalid_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{invalid_loc}')
-    AS SELECT EmployeeID, ManagerID, FirstName, LastName, FullName, JobTitle,
-              OrganizationLevel, MaritalStatus, Gender, Territory, Country, "Group", REASON
+    SELECT EmployeeID, ManagerID, FirstName, LastName, FullName, JobTitle,
+           OrganizationLevel, MaritalStatus, Gender, Territory, Country, "Group", REASON
     FROM invalid;
     """)
 
     # 4) Drops
     run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_employee_{y}_{int(m_z)};")
     run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_employee_invalid_{y}_{int(m_z)};")
-

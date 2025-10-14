@@ -42,8 +42,11 @@ def _ctas_orders_to_silver(year: int, month: int, month_z: str):
     dest_valid   = f"s3://{BUCKET}/silver/domain=sales/year={year}/month={month_z}/"
     dest_invalid = f"s3://{BUCKET}/logs/invalid/orders/year={year}/month={month_z}/"
 
-    # 1) CTAS VÁLIDOS (una sola sentencia)
+    # 1) CTAS VÁLIDOS — CREATE TABLE ... AS WITH ... SELECT ...
     sql_valid = f"""
+    CREATE TABLE {DB}.tmp_orders_valid_{year}_{int(month_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY', external_location='{dest_valid}')
+    AS
     WITH stage AS (
       SELECT
         CAST(SalesOrderID AS INT)              AS SalesOrderID,
@@ -88,21 +91,20 @@ def _ctas_orders_to_silver(year: int, month: int, month_z: str):
       WHERE pk_ok AND date_ok AND qty_ok AND price_ok AND disc_ok
         AND nonneg_ok AND line_ok AND total_ok AND dedup_ok
     )
-    CREATE TABLE {DB}.tmp_orders_valid_{year}_{int(month_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{dest_valid}') AS
     SELECT
       SalesOrderID, SalesOrderDetailID, OrderDate,
       EmployeeID, CustomerID, ProductID, StoreID,
       OrderQty, UnitPrice, UnitPriceDiscount, LineTotal,
       SubTotal, TaxAmt, Freight, TotalDue
-    FROM valid
-    ;
+    FROM valid;
     """
     run_athena(sql_valid)
 
-    # 2) CTAS INVÁLIDOS (otra sentencia separada)
+    # 2) CTAS INVÁLIDOS — CREATE TABLE ... AS WITH ... SELECT ...
     sql_invalid = f"""
+    CREATE TABLE {DB}.tmp_orders_invalid_{year}_{int(month_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY', external_location='{dest_invalid}')
+    AS
     WITH stage AS (
       SELECT
         CAST(SalesOrderID AS INT)              AS SalesOrderID,
@@ -163,23 +165,17 @@ def _ctas_orders_to_silver(year: int, month: int, month_z: str):
         AND nonneg_ok AND line_ok AND total_ok AND dedup_ok
       )
     )
-    CREATE TABLE {DB}.tmp_orders_invalid_{year}_{int(month_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{dest_invalid}') AS
     SELECT
       SalesOrderID, SalesOrderDetailID, OrderDate,
       EmployeeID, CustomerID, ProductID, StoreID,
       OrderQty, UnitPrice, UnitPriceDiscount, LineTotal,
       SubTotal, TaxAmt, Freight, TotalDue, REASON
-    FROM invalid
-    ;
+    FROM invalid;
     """
     run_athena(sql_invalid)
 
-    # 3) DROP tmp válidos
+    # 3) Drops (una sentencia cada una)
     run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_orders_valid_{year}_{int(month_z)};")
-
-    # 4) DROP tmp inválidos
     run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_orders_invalid_{year}_{int(month_z)};")
 
 
