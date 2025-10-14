@@ -1,4 +1,3 @@
-# lambda_function.py
 from etl_orders import run_orders
 from etl_dim_store import run_dim_store
 from etl_dim_products import run_dim_products
@@ -11,10 +10,10 @@ def handler(event, context):
         raise RuntimeError("Falta run_month (YYYY-MM)")
     refresh_dims = bool(event.get("refresh_dims", False))
 
-    # Hecho (siempre, por mes)
+    # Siempre: fact (orders) del mes indicado
     run_orders(run_month)
 
-    # Dimensiones (solo si se solicita; SCD1)
+    # Dimensiones (SCD1 snapshot por run_month)
     if refresh_dims:
         run_dim_store(run_month)
         run_dim_products(run_month)

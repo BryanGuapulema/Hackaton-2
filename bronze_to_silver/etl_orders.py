@@ -1,71 +1,70 @@
-# etl_orders.py
 from athena_utils import run_athena, ym_from_run_month, BUCKET, DB
 
-ORDERS_BRONZE_LOC = f"s3://{BUCKET}/bronze/source=github/table=orders/"
+ORDERS_BASE_LOC = f"s3://{BUCKET}/bronze/source=github/table=orders/"
 
 def _ensure_bronze_orders(year: int, month: int, month_z: str):
-    create_tbl = f"""
+    # Tabla externa estilo Hive en Trino: CREATE TABLE (sin EXTERNAL) + LOCATION
+    run_athena(f"""
     CREATE EXTERNAL TABLE IF NOT EXISTS {DB}.bronze_orders (
-      SalesOrderID           INT,
-      SalesOrderDetailID     INT,
-      OrderDate              STRING,
-      DueDate                STRING,
-      ShipDate               STRING,
-      EmployeeID             INT,
-      CustomerID             INT,
-      SubTotal               DOUBLE,
-      TaxAmt                 DOUBLE,
-      Freight                DOUBLE,
-      TotalDue               DOUBLE,
-      ProductID              INT,
-      OrderQty               INT,
-      UnitPrice              DOUBLE,
-      UnitPriceDiscount      DOUBLE,
-      LineTotal              DOUBLE,
-      StoreID                INT
+      SalesOrderID STRING,
+      SalesOrderDetailID STRING,
+      OrderDate STRING,
+      DueDate STRING,
+      ShipDate STRING,
+      EmployeeID STRING,
+      CustomerID STRING,
+      SubTotal STRING,
+      TaxAmt STRING,
+      Freight STRING,
+      TotalDue STRING,
+      ProductID STRING,
+      OrderQty STRING,
+      UnitPrice STRING,
+      UnitPriceDiscount STRING,
+      LineTotal STRING,
+      StoreID STRING
     )
     PARTITIONED BY (year INT, month INT)
     ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
     WITH SERDEPROPERTIES ('separatorChar' = ',', 'quoteChar' = '"', 'escapeChar'='\\\\')
-    LOCATION '{ORDERS_BRONZE_LOC}';
-    """
-    run_athena(create_tbl)
-
-    add_part = f"""
+    LOCATION '{ORDERS_BASE_LOC}'
+    TBLPROPERTIES ('skip.header.line.count'='1');
+    """)
+    # Añadir partición del mes al path correcto (month_z con cero-izq)
+    run_athena(f"""
     ALTER TABLE {DB}.bronze_orders
     ADD IF NOT EXISTS PARTITION (year={year}, month={int(month_z)})
-    LOCATION '{ORDERS_BRONZE_LOC}year={year}/month={month_z}/';
-    """
-    run_athena(add_part)
+    LOCATION '{ORDERS_BASE_LOC}year={year}/month={int(month_z)}/';
+    """)
 
 def _ctas_orders_to_silver(year: int, month: int, month_z: str):
     dest_valid   = f"s3://{BUCKET}/silver/domain=sales/year={year}/month={month_z}/"
     dest_invalid = f"s3://{BUCKET}/logs/invalid/orders/year={year}/month={month_z}/"
 
-    # 1) CTAS VÁLIDOS — CREATE TABLE ... AS WITH ... SELECT ...
-    sql_valid = f"""
+    # VÁLIDOS
+    run_athena(f"""
     CREATE TABLE {DB}.tmp_orders_valid_{year}_{int(month_z)}
     WITH (format='PARQUET', parquet_compression='SNAPPY', external_location='{dest_valid}')
     AS
     WITH stage AS (
       SELECT
-        CAST(SalesOrderID AS INT)              AS SalesOrderID,
-        CAST(SalesOrderDetailID AS INT)        AS SalesOrderDetailID,
-        CAST(date_parse(OrderDate, '%m/%d/%Y') AS DATE)  AS OrderDate,
-        CAST(EmployeeID AS INT)                AS EmployeeID,
-        CAST(CustomerID AS INT)                AS CustomerID,
-        CAST(ProductID AS INT)                 AS ProductID,
-        CAST(StoreID AS INT)                   AS StoreID,
-        CAST(OrderQty AS INT)                  AS OrderQty,
-        CAST(UnitPrice AS DOUBLE)              AS UnitPrice,
-        CAST(UnitPriceDiscount AS DOUBLE)      AS UnitPriceDiscount,
-        CAST(LineTotal AS DOUBLE)              AS LineTotal,
-        CAST(SubTotal AS DOUBLE)               AS SubTotal,
-        CAST(TaxAmt AS DOUBLE)                 AS TaxAmt,
-        CAST(Freight AS DOUBLE)                AS Freight,
-        CAST(TotalDue AS DOUBLE)               AS TotalDue,
+        TRY(CAST(SalesOrderID AS INT))          AS SalesOrderID,
+        TRY(CAST(SalesOrderDetailID AS INT))    AS SalesOrderDetailID,
+        TRY(date_parse(OrderDate, '%m/%d/%Y'))  AS OrderDate,  -- M/d/yyyy
+        TRY(CAST(EmployeeID AS INT))            AS EmployeeID,
+        TRY(CAST(CustomerID AS INT))            AS CustomerID,
+        TRY(CAST(ProductID AS INT))             AS ProductID,
+        TRY(CAST(StoreID AS INT))               AS StoreID,
+        TRY(CAST(OrderQty AS INT))              AS OrderQty,
+        TRY(CAST(UnitPrice AS DOUBLE))          AS UnitPrice,
+        TRY(CAST(UnitPriceDiscount AS DOUBLE))  AS UnitPriceDiscount,
+        TRY(CAST(LineTotal AS DOUBLE))          AS LineTotal,
+        TRY(CAST(SubTotal AS DOUBLE))           AS SubTotal,
+        TRY(CAST(TaxAmt AS DOUBLE))             AS TaxAmt,
+        TRY(CAST(Freight AS DOUBLE))            AS Freight,
+        TRY(CAST(TotalDue AS DOUBLE))           AS TotalDue,
         ROW_NUMBER() OVER (
-          PARTITION BY SalesOrderID, SalesOrderDetailID
+          PARTITION BY TRY(CAST(SalesOrderID AS INT)), TRY(CAST(SalesOrderDetailID AS INT))
           ORDER BY TRY(date_parse(OrderDate, '%m/%d/%Y')) DESC
         ) AS rn
       FROM {DB}.bronze_orders
@@ -97,33 +96,32 @@ def _ctas_orders_to_silver(year: int, month: int, month_z: str):
       OrderQty, UnitPrice, UnitPriceDiscount, LineTotal,
       SubTotal, TaxAmt, Freight, TotalDue
     FROM valid;
-    """
-    run_athena(sql_valid)
+    """)
 
-    # 2) CTAS INVÁLIDOS — CREATE TABLE ... AS WITH ... SELECT ...
-    sql_invalid = f"""
+    # INVÁLIDOS
+    run_athena(f"""
     CREATE TABLE {DB}.tmp_orders_invalid_{year}_{int(month_z)}
     WITH (format='PARQUET', parquet_compression='SNAPPY', external_location='{dest_invalid}')
     AS
     WITH stage AS (
       SELECT
-        CAST(SalesOrderID AS INT)              AS SalesOrderID,
-        CAST(SalesOrderDetailID AS INT)        AS SalesOrderDetailID,
-        CAST(date_parse(OrderDate, '%m/%d/%Y') AS DATE)  AS OrderDate,
-        CAST(EmployeeID AS INT)                AS EmployeeID,
-        CAST(CustomerID AS INT)                AS CustomerID,
-        CAST(ProductID AS INT)                 AS ProductID,
-        CAST(StoreID AS INT)                   AS StoreID,
-        CAST(OrderQty AS INT)                  AS OrderQty,
-        CAST(UnitPrice AS DOUBLE)              AS UnitPrice,
-        CAST(UnitPriceDiscount AS DOUBLE)      AS UnitPriceDiscount,
-        CAST(LineTotal AS DOUBLE)              AS LineTotal,
-        CAST(SubTotal AS DOUBLE)               AS SubTotal,
-        CAST(TaxAmt AS DOUBLE)                 AS TaxAmt,
-        CAST(Freight AS DOUBLE)                AS Freight,
-        CAST(TotalDue AS DOUBLE)               AS TotalDue,
+        TRY(CAST(SalesOrderID AS INT))          AS SalesOrderID,
+        TRY(CAST(SalesOrderDetailID AS INT))    AS SalesOrderDetailID,
+        TRY(date_parse(OrderDate, '%m/%d/%Y'))  AS OrderDate,
+        TRY(CAST(EmployeeID AS INT))            AS EmployeeID,
+        TRY(CAST(CustomerID AS INT))            AS CustomerID,
+        TRY(CAST(ProductID AS INT))             AS ProductID,
+        TRY(CAST(StoreID AS INT))               AS StoreID,
+        TRY(CAST(OrderQty AS INT))              AS OrderQty,
+        TRY(CAST(UnitPrice AS DOUBLE))          AS UnitPrice,
+        TRY(CAST(UnitPriceDiscount AS DOUBLE))  AS UnitPriceDiscount,
+        TRY(CAST(LineTotal AS DOUBLE))          AS LineTotal,
+        TRY(CAST(SubTotal AS DOUBLE))           AS SubTotal,
+        TRY(CAST(TaxAmt AS DOUBLE))             AS TaxAmt,
+        TRY(CAST(Freight AS DOUBLE))            AS Freight,
+        TRY(CAST(TotalDue AS DOUBLE))           AS TotalDue,
         ROW_NUMBER() OVER (
-          PARTITION BY SalesOrderID, SalesOrderDetailID
+          PARTITION BY TRY(CAST(SalesOrderID AS INT)), TRY(CAST(SalesOrderDetailID AS INT))
           ORDER BY TRY(date_parse(OrderDate, '%m/%d/%Y')) DESC
         ) AS rn
       FROM {DB}.bronze_orders
@@ -171,13 +169,11 @@ def _ctas_orders_to_silver(year: int, month: int, month_z: str):
       OrderQty, UnitPrice, UnitPriceDiscount, LineTotal,
       SubTotal, TaxAmt, Freight, TotalDue, REASON
     FROM invalid;
-    """
-    run_athena(sql_invalid)
+    """)
 
-    # 3) Drops (una sentencia cada una)
+    # Limpieza
     run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_orders_valid_{year}_{int(month_z)};")
     run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_orders_invalid_{year}_{int(month_z)};")
-
 
 def run_orders(run_month: str):
     y, m, m_z = ym_from_run_month(run_month)
