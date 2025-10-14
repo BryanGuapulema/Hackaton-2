@@ -7,7 +7,8 @@ def run_dim_customers(run_month: str):
     silver_loc = f"s3://{BUCKET}/silver/dim=customer/"
     invalid_loc = f"s3://{BUCKET}/logs/invalid/dim=customer/run_month={y}-{m_z}/"
 
-    sql = f"""
+    # 1) Tabla externa Bronze
+    run_athena(f"""
     CREATE EXTERNAL TABLE IF NOT EXISTS {DB}.bronze_customers_{y}_{int(m_z)} (
       CustomerID INT,
       FirstName  STRING,
@@ -17,19 +18,36 @@ def run_dim_customers(run_month: str):
     ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
     WITH SERDEPROPERTIES ('separatorChar' = ',', 'quoteChar' = '"', 'escapeChar'='\\\\')
     LOCATION '{bronze_loc}';
+    """)
 
+    # 2) CTAS válidos → Silver
+    run_athena(f"""
     WITH s AS (
-      SELECT
-        CAST(CustomerID AS INT) AS CustomerID,
-        TRIM(FirstName)         AS FirstName,
-        TRIM(LastName)          AS LastName,
-        TRIM(FullName)          AS FullName,
-        ROW_NUMBER() OVER (PARTITION BY CAST(CustomerID AS INT)
-                           ORDER BY TRIM(FullName)) AS rn
+      SELECT CAST(CustomerID AS INT) AS CustomerID,
+             TRIM(FirstName)         AS FirstName,
+             TRIM(LastName)          AS LastName,
+             TRIM(FullName)          AS FullName,
+             ROW_NUMBER() OVER (PARTITION BY CAST(CustomerID AS INT)
+                                ORDER BY TRIM(FullName)) AS rn
       FROM {DB}.bronze_customers_{y}_{int(m_z)}
     ),
-    valid AS (
-      SELECT * FROM s WHERE CustomerID IS NOT NULL AND rn=1
+    valid AS (SELECT * FROM s WHERE CustomerID IS NOT NULL AND rn=1)
+    CREATE TABLE {DB}.tmp_dim_customer_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY',
+          external_location='{silver_loc}')
+    AS SELECT CustomerID, FirstName, LastName, FullName FROM valid;
+    """)
+
+    # 3) CTAS inválidos → logs/invalid
+    run_athena(f"""
+    WITH s AS (
+      SELECT CAST(CustomerID AS INT) AS CustomerID,
+             TRIM(FirstName)         AS FirstName,
+             TRIM(LastName)          AS LastName,
+             TRIM(FullName)          AS FullName,
+             ROW_NUMBER() OVER (PARTITION BY CAST(CustomerID AS INT)
+                                ORDER BY TRIM(FullName)) AS rn
+      FROM {DB}.bronze_customers_{y}_{int(m_z)}
     ),
     invalid AS (
       SELECT s.*,
@@ -38,21 +56,13 @@ def run_dim_customers(run_month: str):
              ELSE 'UNKNOWN' END AS REASON
       FROM s
       WHERE NOT (CustomerID IS NOT NULL AND rn=1)
-    );
-
-    CREATE TABLE {DB}.tmp_dim_customer_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{silver_loc}') AS
-    SELECT CustomerID, FirstName, LastName, FullName
-    FROM valid;
-
+    )
     CREATE TABLE {DB}.tmp_dim_customer_invalid_{y}_{int(m_z)}
     WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{invalid_loc}') AS
-    SELECT CustomerID, FirstName, LastName, FullName, REASON
-    FROM invalid;
+          external_location='{invalid_loc}')
+    AS SELECT CustomerID, FirstName, LastName, FullName, REASON FROM invalid;
+    """)
 
-    DROP TABLE IF EXISTS {DB}.tmp_dim_customer_{y}_{int(m_z)};
-    DROP TABLE IF EXISTS {DB}.tmp_dim_customer_invalid_{y}_{int(m_z)};
-    """
-    run_athena(sql)
+    # 4) Drops
+    run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_customer_{y}_{int(m_z)};")
+    run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_customer_invalid_{y}_{int(m_z)};")

@@ -10,7 +10,8 @@ def run_dim_store(run_month: str):
     silver_loc = f"s3://{BUCKET}/silver/dim=store/"
     invalid_loc = f"s3://{BUCKET}/logs/invalid/dim=store/run_month={y}-{m_z}/"
 
-    sql = f"""
+    # 1) Tablas externas (una sentencia por llamada)
+    run_athena(f"""
     CREATE EXTERNAL TABLE IF NOT EXISTS {DB}.bronze_stores_{y}_{int(m_z)} (
       StoreID    INT,
       StoreName  STRING,
@@ -19,7 +20,8 @@ def run_dim_store(run_month: str):
     ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
     WITH SERDEPROPERTIES ('separatorChar' = ',', 'quoteChar' = '"', 'escapeChar'='\\\\')
     LOCATION '{stores_loc}';
-
+    """)
+    run_athena(f"""
     CREATE EXTERNAL TABLE IF NOT EXISTS {DB}.bronze_storesbudget_{y}_{int(m_z)} (
       StoreID INT,
       Budget  STRING
@@ -27,7 +29,10 @@ def run_dim_store(run_month: str):
     ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
     WITH SERDEPROPERTIES ('separatorChar' = ',', 'quoteChar' = '"', 'escapeChar'='\\\\')
     LOCATION '{budget_loc}';
+    """)
 
+    # 2) CTAS válidos → Silver
+    run_athena(f"""
     WITH s AS (
       SELECT
         CAST(StoreID AS INT)         AS StoreID,
@@ -37,47 +42,67 @@ def run_dim_store(run_month: str):
       FROM {DB}.bronze_stores_{y}_{int(m_z)}
     ),
     b AS (
-      SELECT
-        CAST(StoreID AS INT) AS StoreID,
-        TRY(CAST(Budget AS DECIMAL(18,2))) AS Budget
+      SELECT CAST(StoreID AS INT) AS StoreID,
+             TRY(CAST(Budget AS DECIMAL(18,2))) AS Budget
       FROM {DB}.bronze_storesbudget_{y}_{int(m_z)}
     ),
     j AS (
-      SELECT
-        s.StoreID, s.StoreName, s.EmployeeID,
-        COALESCE(b.Budget, CAST(0 AS DECIMAL(18,2))) AS Budget,
-        s.rn,
-        (s.StoreID IS NOT NULL)             AS pk_ok,
-        (b.Budget IS NULL OR b.Budget >= 0) AS budget_ok
-      FROM s
-      LEFT JOIN b USING (StoreID)
+      SELECT s.StoreID, s.StoreName, s.EmployeeID,
+             COALESCE(b.Budget, CAST(0 AS DECIMAL(18,2))) AS Budget,
+             s.rn,
+             (s.StoreID IS NOT NULL)             AS pk_ok,
+             (b.Budget IS NULL OR b.Budget >= 0) AS budget_ok
+      FROM s LEFT JOIN b USING (StoreID)
     ),
-    valid AS (SELECT * FROM j WHERE pk_ok AND rn=1 AND budget_ok),
+    valid AS (
+      SELECT * FROM j WHERE pk_ok AND rn=1 AND budget_ok
+    )
+    CREATE TABLE {DB}.tmp_dim_store_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY',
+          external_location='{silver_loc}')
+    AS SELECT StoreID, StoreName, EmployeeID, Budget FROM valid;
+    """)
+
+    # 3) CTAS inválidos → logs/invalid
+    run_athena(f"""
+    WITH s AS (
+      SELECT
+        CAST(StoreID AS INT)         AS StoreID,
+        TRIM(StoreName)              AS StoreName,
+        TRY(CAST(EmployeeID AS INT)) AS EmployeeID,
+        ROW_NUMBER() OVER (PARTITION BY CAST(StoreID AS INT) ORDER BY StoreName) AS rn
+      FROM {DB}.bronze_stores_{y}_{int(m_z)}
+    ),
+    b AS (
+      SELECT CAST(StoreID AS INT) AS StoreID,
+             TRY(CAST(Budget AS DECIMAL(18,2))) AS Budget
+      FROM {DB}.bronze_storesbudget_{y}_{int(m_z)}
+    ),
+    j AS (
+      SELECT s.StoreID, s.StoreName, s.EmployeeID,
+             COALESCE(b.Budget, CAST(0 AS DECIMAL(18,2))) AS Budget,
+             s.rn,
+             (s.StoreID IS NOT NULL)             AS pk_ok,
+             (b.Budget IS NULL OR b.Budget >= 0) AS budget_ok
+      FROM s LEFT JOIN b USING (StoreID)
+    ),
     invalid AS (
       SELECT j.*,
         CASE
-          WHEN NOT pk_ok   THEN 'PK_NULL'
-          WHEN rn > 1      THEN 'DUPLICATE_PK'
-          WHEN NOT budget_ok THEN 'BUDGET_INVALID'
+          WHEN NOT pk_ok      THEN 'PK_NULL'
+          WHEN rn > 1         THEN 'DUPLICATE_PK'
+          WHEN NOT budget_ok  THEN 'BUDGET_INVALID'
           ELSE 'UNKNOWN'
         END AS REASON
       FROM j
       WHERE NOT (pk_ok AND rn=1 AND budget_ok)
-    );
-
-    CREATE TABLE {DB}.tmp_dim_store_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{silver_loc}') AS
-    SELECT StoreID, StoreName, EmployeeID, Budget
-    FROM valid;
-
+    )
     CREATE TABLE {DB}.tmp_dim_store_invalid_{y}_{int(m_z)}
     WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{invalid_loc}') AS
-    SELECT StoreID, StoreName, EmployeeID, Budget, REASON
-    FROM invalid;
+          external_location='{invalid_loc}')
+    AS SELECT StoreID, StoreName, EmployeeID, Budget, REASON FROM invalid;
+    """)
 
-    DROP TABLE IF EXISTS {DB}.tmp_dim_store_{y}_{int(m_z)};
-    DROP TABLE IF EXISTS {DB}.tmp_dim_store_invalid_{y}_{int(m_z)};
-    """
-    run_athena(sql)
+    # 4) Drops (una por llamada)
+    run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_store_{y}_{int(m_z)};")
+    run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_store_invalid_{y}_{int(m_z)};")

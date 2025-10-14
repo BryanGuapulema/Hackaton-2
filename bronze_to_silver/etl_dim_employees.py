@@ -7,7 +7,8 @@ def run_dim_employees(run_month: str):
     silver_loc = f"s3://{BUCKET}/silver/dim=employee/"
     invalid_loc = f"s3://{BUCKET}/logs/invalid/dim=employee/run_month={y}-{m_z}/"
 
-    sql = f"""
+    # 1) Tabla externa Bronze
+    run_athena(f"""
     CREATE EXTERNAL TABLE IF NOT EXISTS {DB}.bronze_employee_{y}_{int(m_z)} (
       EmployeeID        INT,
       ManagerID         INT,
@@ -25,7 +26,10 @@ def run_dim_employees(run_month: str):
     ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
     WITH SERDEPROPERTIES ('separatorChar' = ',', 'quoteChar' = '"', 'escapeChar'='\\\\')
     LOCATION '{bronze_loc}';
+    """)
 
+    # 2) CTAS válidos → Silver
+    run_athena(f"""
     WITH s AS (
       SELECT
         CAST(EmployeeID AS INT)        AS EmployeeID,
@@ -46,9 +50,8 @@ def run_dim_employees(run_month: str):
     ),
     s2 AS (
       SELECT *,
-        -- Normaliza dominios
         CASE WHEN Gender IN ('M','MALE','H') THEN 'M'
-             WHEN Gender IN ('F','FEMALE','Mujer') THEN 'F'
+             WHEN Gender IN ('F','FEMALE','MUJER') THEN 'F'
              ELSE 'U' END AS GenderNorm,
         CASE WHEN MaritalStatus IN ('S','SINGLE','SOLTERO','SOLTERA') THEN 'S'
              WHEN MaritalStatus IN ('M','MARRIED','CASADO','CASADA') THEN 'M'
@@ -58,6 +61,45 @@ def run_dim_employees(run_month: str):
     valid AS (
       SELECT * FROM s2
       WHERE EmployeeID IS NOT NULL AND rn=1 AND GenderNorm IN ('M','F') AND MaritalNorm IN ('S','M')
+    )
+    CREATE TABLE {DB}.tmp_dim_employee_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY',
+          external_location='{silver_loc}')
+    AS SELECT EmployeeID, ManagerID, FirstName, LastName, FullName, JobTitle,
+              OrganizationLevel, MaritalNorm AS MaritalStatus, GenderNorm AS Gender,
+              Territory, Country, "Group"
+    FROM valid;
+    """)
+
+    # 3) CTAS inválidos → logs/invalid
+    run_athena(f"""
+    WITH s AS (
+      SELECT
+        CAST(EmployeeID AS INT)        AS EmployeeID,
+        TRY(CAST(ManagerID AS INT))    AS ManagerID,
+        TRIM(FirstName)                AS FirstName,
+        TRIM(LastName)                 AS LastName,
+        TRIM(FullName)                 AS FullName,
+        TRIM(JobTitle)                 AS JobTitle,
+        TRY(CAST(OrganizationLevel AS INT)) AS OrganizationLevel,
+        UPPER(TRIM(MaritalStatus))     AS MaritalStatus,
+        UPPER(TRIM(Gender))            AS Gender,
+        TRIM(Territory)                AS Territory,
+        TRIM(Country)                  AS Country,
+        TRIM("Group")                  AS "Group",
+        ROW_NUMBER() OVER (PARTITION BY CAST(EmployeeID AS INT)
+                           ORDER BY TRIM(FullName)) AS rn
+      FROM {DB}.bronze_employee_{y}_{int(m_z)}
+    ),
+    s2 AS (
+      SELECT *,
+        CASE WHEN Gender IN ('M','MALE','H') THEN 'M'
+             WHEN Gender IN ('F','FEMALE','MUJER') THEN 'F'
+             ELSE 'U' END AS GenderNorm,
+        CASE WHEN MaritalStatus IN ('S','SINGLE','SOLTERO','SOLTERA') THEN 'S'
+             WHEN MaritalStatus IN ('M','MARRIED','CASADO','CASADA') THEN 'M'
+             ELSE 'U' END AS MaritalNorm
+      FROM s
     ),
     invalid AS (
       SELECT s2.*,
@@ -69,24 +111,16 @@ def run_dim_employees(run_month: str):
           ELSE 'UNKNOWN' END AS REASON
       FROM s2
       WHERE NOT (EmployeeID IS NOT NULL AND rn=1 AND GenderNorm IN ('M','F') AND MaritalNorm IN ('S','M'))
-    );
-
-    CREATE TABLE {DB}.tmp_dim_employee_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{silver_loc}') AS
-    SELECT EmployeeID, ManagerID, FirstName, LastName, FullName, JobTitle,
-           OrganizationLevel, MaritalNorm AS MaritalStatus, GenderNorm AS Gender,
-           Territory, Country, "Group"
-    FROM valid;
-
+    )
     CREATE TABLE {DB}.tmp_dim_employee_invalid_{y}_{int(m_z)}
     WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{invalid_loc}') AS
-    SELECT EmployeeID, ManagerID, FirstName, LastName, FullName, JobTitle,
-           OrganizationLevel, MaritalStatus, Gender, Territory, Country, "Group", REASON
+          external_location='{invalid_loc}')
+    AS SELECT EmployeeID, ManagerID, FirstName, LastName, FullName, JobTitle,
+              OrganizationLevel, MaritalStatus, Gender, Territory, Country, "Group", REASON
     FROM invalid;
+    """)
 
-    DROP TABLE IF EXISTS {DB}.tmp_dim_employee_{y}_{int(m_z)};
-    DROP TABLE IF EXISTS {DB}.tmp_dim_employee_invalid_{y}_{int(m_z)};
-    """
-    run_athena(sql)
+    # 4) Drops
+    run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_employee_{y}_{int(m_z)};")
+    run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_employee_invalid_{y}_{int(m_z)};")
+

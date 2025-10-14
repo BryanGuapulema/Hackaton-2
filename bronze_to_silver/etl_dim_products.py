@@ -2,7 +2,7 @@
 from athena_utils import run_athena, ym_from_run_month, BUCKET, DB
 
 def run_dim_products(run_month: str):
-    """Crea Category, SubCategory y Product en Silver; valida FKs y deduplica."""
+    """Crea Category, SubCategory y Product en Silver; valida PKs y dedup. (FKs básicas por no-nulos)."""
     y, m, m_z = ym_from_run_month(run_month)
 
     cat_loc  = f"s3://{BUCKET}/bronze/source=github/table=productCategories/run_month={y}-{m_z}/"
@@ -17,8 +17,8 @@ def run_dim_products(run_month: str):
     invalid_sub  = f"s3://{BUCKET}/logs/invalid/dim=productSubcategory/run_month={y}-{m_z}/"
     invalid_prod = f"s3://{BUCKET}/logs/invalid/dim=product/run_month={y}-{m_z}/"
 
-    sql = f"""
-    -- Tablas externas Bronze por snapshot
+    # 1) Tablas externas Bronze (una por llamada)
+    run_athena(f"""
     CREATE EXTERNAL TABLE IF NOT EXISTS {DB}.bronze_productcategories_{y}_{int(m_z)} (
       CategoryID   INT,
       CategoryName STRING
@@ -26,7 +26,8 @@ def run_dim_products(run_month: str):
     ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
     WITH SERDEPROPERTIES ('separatorChar' = ',', 'quoteChar' = '"', 'escapeChar'='\\\\')
     LOCATION '{cat_loc}';
-
+    """)
+    run_athena(f"""
     CREATE EXTERNAL TABLE IF NOT EXISTS {DB}.bronze_productsubcategories_{y}_{int(m_z)} (
       SubCategoryID INT,
       CategoryID    INT,
@@ -35,7 +36,8 @@ def run_dim_products(run_month: str):
     ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
     WITH SERDEPROPERTIES ('separatorChar' = ',', 'quoteChar' = '"', 'escapeChar'='\\\\')
     LOCATION '{sub_loc}';
-
+    """)
+    run_athena(f"""
     CREATE EXTERNAL TABLE IF NOT EXISTS {DB}.bronze_products_{y}_{int(m_z)} (
       ProductID     INT,
       ProductNumber STRING,
@@ -49,8 +51,10 @@ def run_dim_products(run_month: str):
     ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
     WITH SERDEPROPERTIES ('separatorChar' = ',', 'quoteChar' = '"', 'escapeChar'='\\\\')
     LOCATION '{prod_loc}';
+    """)
 
-    -- Category: dedup por PK
+    # 2) Category — CTAS válidos
+    run_athena(f"""
     WITH c AS (
       SELECT CAST(CategoryID AS INT) AS CategoryID,
              TRIM(CategoryName)      AS CategoryName,
@@ -58,7 +62,22 @@ def run_dim_products(run_month: str):
                                 ORDER BY TRIM(CategoryName)) AS rn
       FROM {DB}.bronze_productcategories_{y}_{int(m_z)}
     ),
-    c_valid AS (SELECT * FROM c WHERE CategoryID IS NOT NULL AND rn=1),
+    c_valid AS (SELECT * FROM c WHERE CategoryID IS NOT NULL AND rn=1)
+    CREATE TABLE {DB}.tmp_dim_product_category_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY',
+          external_location='{silver_cat}')
+    AS SELECT CategoryID, CategoryName FROM c_valid;
+    """)
+
+    # 3) Category — CTAS inválidos
+    run_athena(f"""
+    WITH c AS (
+      SELECT CAST(CategoryID AS INT) AS CategoryID,
+             TRIM(CategoryName)      AS CategoryName,
+             ROW_NUMBER() OVER (PARTITION BY CAST(CategoryID AS INT)
+                                ORDER BY TRIM(CategoryName)) AS rn
+      FROM {DB}.bronze_productcategories_{y}_{int(m_z)}
+    ),
     c_invalid AS (
       SELECT *, CASE WHEN CategoryID IS NULL THEN 'PK_NULL'
                      WHEN rn>1 THEN 'DUPLICATE_PK'
@@ -66,21 +85,16 @@ def run_dim_products(run_month: str):
       FROM c
       WHERE NOT (CategoryID IS NOT NULL AND rn=1)
     )
-
-    CREATE TABLE {DB}.tmp_dim_product_category_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{silver_cat}') AS
-    SELECT CategoryID, CategoryName FROM c_valid;
-
     CREATE TABLE {DB}.tmp_dim_product_category_invalid_{y}_{int(m_z)}
     WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{invalid_cat}') AS
-    SELECT CategoryID, CategoryName, REASON FROM c_invalid;
+          external_location='{invalid_cat}')
+    AS SELECT CategoryID, CategoryName, REASON FROM c_invalid;
+    """)
+    run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_product_category_{y}_{int(m_z)};")
+    run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_product_category_invalid_{y}_{int(m_z)};")
 
-    DROP TABLE IF EXISTS {DB}.tmp_dim_product_category_{y}_{int(m_z)};
-    DROP TABLE IF EXISTS {DB}.tmp_dim_product_category_invalid_{y}_{int(m_z)};
-
-    -- SubCategory: FK a Category
+    # 4) SubCategory — CTAS válidos
+    run_athena(f"""
     WITH s AS (
       SELECT CAST(SubCategoryID AS INT) AS SubCategoryID,
              CAST(CategoryID AS INT)    AS CategoryID,
@@ -89,42 +103,47 @@ def run_dim_products(run_month: str):
                                 ORDER BY TRIM(SubCategoryName)) AS rn
       FROM {DB}.bronze_productsubcategories_{y}_{int(m_z)}
     ),
-    s_enriched AS (
-      SELECT s.*, (s.CategoryID IS NOT NULL) AS cat_fk_notnull
-      FROM s
-    ),
     s_valid AS (
-      SELECT s.*
-      FROM s_enriched s
-      JOIN {DB}."s3_{""}" ON true  -- placeholder no-op (Athena necesita FROM)
-      WHERE s.SubCategoryID IS NOT NULL AND s.rn=1 AND s.cat_fk_notnull
+      SELECT * FROM s
+      WHERE SubCategoryID IS NOT NULL AND rn=1 AND CategoryID IS NOT NULL
+    )
+    CREATE TABLE {DB}.tmp_dim_product_subcategory_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY',
+          external_location='{silver_sub}')
+    AS SELECT SubCategoryID, CategoryID, SubCategoryName FROM s_valid;
+    """)
+
+    # 5) SubCategory — CTAS inválidos
+    run_athena(f"""
+    WITH s AS (
+      SELECT CAST(SubCategoryID AS INT) AS SubCategoryID,
+             CAST(CategoryID AS INT)    AS CategoryID,
+             TRIM(SubCategoryName)      AS SubCategoryName,
+             ROW_NUMBER() OVER (PARTITION BY CAST(SubCategoryID AS INT)
+                                ORDER BY TRIM(SubCategoryName)) AS rn
+      FROM {DB}.bronze_productsubcategories_{y}_{int(m_z)}
     ),
     s_invalid AS (
       SELECT s.*,
         CASE
           WHEN s.SubCategoryID IS NULL THEN 'PK_NULL'
           WHEN s.rn > 1 THEN 'DUPLICATE_PK'
-          WHEN NOT s.cat_fk_notnull THEN 'CAT_FK_NULL'
+          WHEN s.CategoryID IS NULL THEN 'CAT_FK_NULL'
           ELSE 'UNKNOWN'
         END AS REASON
-      FROM s_enriched s
-      WHERE NOT (s.SubCategoryID IS NOT NULL AND s.rn=1 AND s.cat_fk_notnull)
+      FROM s
+      WHERE NOT (s.SubCategoryID IS NOT NULL AND s.rn=1 AND s.CategoryID IS NOT NULL)
     )
-
-    CREATE TABLE {DB}.tmp_dim_product_subcategory_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{silver_sub}') AS
-    SELECT SubCategoryID, CategoryID, SubCategoryName FROM s_valid;
-
     CREATE TABLE {DB}.tmp_dim_product_subcategory_invalid_{y}_{int(m_z)}
     WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{invalid_sub}') AS
-    SELECT SubCategoryID, CategoryID, SubCategoryName, REASON FROM s_invalid;
+          external_location='{invalid_sub}')
+    AS SELECT SubCategoryID, CategoryID, SubCategoryName, REASON FROM s_invalid;
+    """)
+    run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_product_subcategory_{y}_{int(m_z)};")
+    run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_product_subcategory_invalid_{y}_{int(m_z)};")
 
-    DROP TABLE IF EXISTS {DB}.tmp_dim_product_subcategory_{y}_{int(m_z)};
-    DROP TABLE IF EXISTS {DB}.tmp_dim_product_subcategory_invalid_{y}_{int(m_z)};
-
-    -- Product: FK a SubCategory
+    # 6) Product — CTAS válidos
+    run_athena(f"""
     WITH p AS (
       SELECT CAST(ProductID AS INT)     AS ProductID,
              TRIM(ProductNumber)        AS ProductNumber,
@@ -143,6 +162,31 @@ def run_dim_products(run_month: str):
     p_valid AS (
       SELECT * FROM p
       WHERE ProductID IS NOT NULL AND rn=1 AND SubCategoryID IS NOT NULL
+    )
+    CREATE TABLE {DB}.tmp_dim_product_{y}_{int(m_z)}
+    WITH (format='PARQUET', parquet_compression='SNAPPY',
+          external_location='{silver_prod}')
+    AS SELECT ProductID, ProductNumber, ProductName, ModelName, MakeFlag,
+              StandardCost, ListPrice, SubCategoryID
+    FROM p_valid;
+    """)
+
+    # 7) Product — CTAS inválidos
+    run_athena(f"""
+    WITH p AS (
+      SELECT CAST(ProductID AS INT)     AS ProductID,
+             TRIM(ProductNumber)        AS ProductNumber,
+             TRIM(ProductName)          AS ProductName,
+             NULLIF(TRIM(ModelName),'') AS ModelName,
+             CASE UPPER(TRIM(MakeFlag))
+               WHEN '1' THEN TRUE WHEN 'TRUE' THEN TRUE WHEN 'Y' THEN TRUE
+               ELSE FALSE END           AS MakeFlag,
+             TRY(CAST(StandardCost AS DOUBLE)) AS StandardCost,
+             TRY(CAST(ListPrice AS DOUBLE))    AS ListPrice,
+             CAST(SubCategoryID AS INT) AS SubCategoryID,
+             ROW_NUMBER() OVER (PARTITION BY CAST(ProductID AS INT)
+                                ORDER BY TRIM(ProductName)) AS rn
+      FROM {DB}.bronze_products_{y}_{int(m_z)}
     ),
     p_invalid AS (
       SELECT p.*,
@@ -155,22 +199,12 @@ def run_dim_products(run_month: str):
       FROM p
       WHERE NOT (p.ProductID IS NOT NULL AND p.rn=1 AND p.SubCategoryID IS NOT NULL)
     )
-
-    CREATE TABLE {DB}.tmp_dim_product_{y}_{int(m_z)}
-    WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{silver_prod}') AS
-    SELECT ProductID, ProductNumber, ProductName, ModelName, MakeFlag,
-           StandardCost, ListPrice, SubCategoryID
-    FROM p_valid;
-
     CREATE TABLE {DB}.tmp_dim_product_invalid_{y}_{int(m_z)}
     WITH (format='PARQUET', parquet_compression='SNAPPY',
-          external_location='{invalid_prod}') AS
-    SELECT ProductID, ProductNumber, ProductName, ModelName, MakeFlag,
-           StandardCost, ListPrice, SubCategoryID, REASON
+          external_location='{invalid_prod}')
+    AS SELECT ProductID, ProductNumber, ProductName, ModelName, MakeFlag,
+              StandardCost, ListPrice, SubCategoryID, REASON
     FROM p_invalid;
-
-    DROP TABLE IF EXISTS {DB}.tmp_dim_product_{y}_{int(m_z)};
-    DROP TABLE IF EXISTS {DB}.tmp_dim_product_invalid_{y}_{int(m_z)};
-    """
-    run_athena(sql)
+    """)
+    run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_product_{y}_{int(m_z)};")
+    run_athena(f"DROP TABLE IF EXISTS {DB}.tmp_dim_product_invalid_{y}_{int(m_z)};")
