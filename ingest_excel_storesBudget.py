@@ -154,8 +154,8 @@ def lambda_handler(event, context):
         count += 1
 
     # 5) escribir salida en Bronze/run_month
-    dest_prefix = f"bronze/source=excel/table=storesBudget/run_month={run_month}/"
-    dest_key = f"{dest_prefix}storesBudget_{run_month}.csv"
+    dest_prefix = f"bronze/source=excel/table=storesBudget/csv/"
+    dest_key = f"{dest_prefix}storesBudget.csv"
     s3.put_object(Bucket=BUCKET, Key=dest_key, Body=out.getvalue().encode('utf-8'))
 
     # 6) control

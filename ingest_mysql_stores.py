@@ -38,8 +38,8 @@ def handler(event, context):
     w = csv.DictWriter(out, fieldnames=fn); w.writeheader()
     for r in rows: w.writerow(r)
 
-    prefix = f"bronze/source=mysql/table=stores/run_month={run_month}/"
-    s3.put_object(Bucket=BUCKET, Key=f"{prefix}stores_{run_month}.csv",
+    prefix = f"bronze/source=mysql/table=stores/"
+    s3.put_object(Bucket=BUCKET, Key=f"{prefix}stores.csv",
                   Body=out.getvalue().encode('utf-8'))
 
     dynamodb.Table(CONTROL_TABLE).put_item(Item={

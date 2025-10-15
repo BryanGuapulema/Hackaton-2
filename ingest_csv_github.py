@@ -90,7 +90,7 @@ def handler(event, context):
                 date_fmt = src.get("date_format", "MM-dd-yyyy")
                 y, m = _month_parts(run_month)
                 # salida particionada por year/month
-                key_prefix = f"{target_prefix}year={y}/month={m}/"
+                key_prefix = f"{target_prefix}"
                 # opcional: limpiar partición si allow_overwrite
                 if allow_overwrite:
                     _clear_prefix(BUCKET, key_prefix)
@@ -112,7 +112,7 @@ def handler(event, context):
 
             else:
                 # snapshot por mes
-                key_prefix = f"{target_prefix}run_month={run_month}/"
+                key_prefix = f"{target_prefix}"
                 if allow_overwrite:
                     _clear_prefix(BUCKET, key_prefix)
                 data = io.StringIO()
@@ -120,7 +120,7 @@ def handler(event, context):
                 w.writeheader()
                 for row in reader:
                     w.writerow(row)
-                _upload_bytes(f"{key_prefix}{table}_{run_month}.csv", data.getvalue().encode('utf-8'))
+                _upload_bytes(f"{key_prefix}{table}.csv", data.getvalue().encode('utf-8'))
 
             # log control por tabla
             _put_control({
