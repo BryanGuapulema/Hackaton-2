@@ -61,20 +61,26 @@ def sql_insert_for(s3_path: str, run_month: str) -> str:
 
 def process_one_object(bucket: str, key: str):
     """
-    Procesa un solo objeto S3:
-      - Valida nombre (orders_YYYY-MM.csv)
-      - Idempotencia: si ya existe RunMonth en fact_sales => SKIP
-      - Archivo vacío: si el CSV cuenta 0 filas => SKIP
-      - Inserta (append) sólo ese archivo
+    Procesa un solo objeto S3 si y solo si:
+      - Está bajo bronze/source...
+      - Contiene table=orders/
+      - Termina en .csv
+      - Cumple patrón orders_YYYY-MM.csv
     """
     if bucket != BUCKET:
         return {"key": key, "status": "IGNORED_OTHER_BUCKET"}
 
-    if not key.startswith(ORDERS_PREFIX) or not key.endswith(".csv"):
-        return {"key": key, "status": "IGNORED_PREFIX_OR_SUFFIX"}
+    # 🔒 Filtro robusto por ruta
+    if not key.startswith("bronze/source"):
+        return {"key": key, "status": "IGNORED_PREFIX"}
+    if "table=orders/" not in key:
+        return {"key": key, "status": "IGNORED_NOT_ORDERS"}
+    if not key.endswith(".csv"):
+        return {"key": key, "status": "IGNORED_NOT_CSV"}
 
     run_month = parse_run_month_from_key(key)
     if not run_month:
+        # Ej.: bronze/source=github/table=orders/some_file.csv → lo ignoramos
         return {"key": key, "status": "IGNORED_BAD_NAME"}
 
     s3_path = make_s3_path(bucket, key)
@@ -97,9 +103,10 @@ def process_one_object(bucket: str, key: str):
     run_athena(sql)
     logger.info(f"Inserted month {run_month} from {s3_path} (file_rows_estimate={n_file})")
 
-    # 4) (Opcional) podrías reconfirmar filas insertadas volviendo a contar el mes
+    # 4) Confirmación post-insert
     n_after = get_scalar_int(sql_count_month(run_month), default=0)
     return {"key": key, "run_month": run_month, "status": "SUCCEEDED", "rows_inserted": n_after}
+
 
 def lambda_handler(event, context):
     """
