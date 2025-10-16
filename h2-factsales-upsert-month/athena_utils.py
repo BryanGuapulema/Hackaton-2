@@ -35,18 +35,18 @@ def run_athena(sql: str, db: str = DB):
 def get_scalar_int(sql: str, default: int = 0) -> int:
     """
     Ejecuta una SELECT que devuelve una sola celda numérica (ej: COUNT(*)).
-    Retorna int (o 'default' si no hay filas).
+    Athena API devuelve la primera fila como HEADER; usamos la segunda fila.
     """
     qid = run_athena(sql)
     res = ATHENA.get_query_results(QueryExecutionId=qid)
     rows = res.get("ResultSet", {}).get("Rows", [])
-    if not rows:
+    # rows[0] = header; rows[1] = first data row (si existe)
+    if len(rows) < 2:
         return default
-    # En Athena, la primera fila ya es dato (no encabezado). Si viniera vacía, devolvemos default.
-    first = rows[0].get("Data", [])
-    if not first or "VarCharValue" not in first[0]:
+    data = rows[1].get("Data", [])
+    if not data or "VarCharValue" not in data[0]:
         return default
     try:
-        return int(float(first[0]["VarCharValue"]))
+        return int(float(data[0]["VarCharValue"]))
     except Exception:
         return default
