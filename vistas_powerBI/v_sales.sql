@@ -6,8 +6,8 @@ SELECT
   f.RunMonth,
   c.FullName AS CustomerName,
   e.FullName AS EmployeeName, e.JobTitle, e.Territory, e.Country,
-  f.StoreKey,                               -- usa la FK directa del hecho
-  f.ProductKey,                             -- idem
+  f.StoreKey,                               
+  f.ProductKey,                             
   p.ProductName, p.ModelName,
   p.SubCategoryName, p.CategoryName,
   f.OrderQty, f.UnitPrice, f.UnitPriceDiscount, f.SubTotal, f.TaxAmt, f.Freight, f.TotalDue, f.LineTotal

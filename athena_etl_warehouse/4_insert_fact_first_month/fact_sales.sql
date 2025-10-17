@@ -3,7 +3,6 @@ SELECT
   o.SalesOrderID            AS SalesOrderKey,
   o.SalesOrderDetailID      AS SalesOrderDetailKey,
 
-  -- Fechas: ajusta el patrón si tu CSV tiene otro formato
   TRY(date_parse(o.OrderDate, '%m/%e/%Y')) AS OrderDate,
   TRY(date_parse(o.DueDate,   '%m/%e/%Y')) AS DueDate,
   TRY(date_parse(o.ShipDate,  '%m/%e/%Y')) AS ShipDate,
